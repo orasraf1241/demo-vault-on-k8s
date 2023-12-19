@@ -1,26 +1,26 @@
-# requerment 
-1. kubernatis or minikube
-2. helm chart install 
+# Vault Deployment Guide
+
+## requerment 
+1. Kubernetes or Minikube
+2. Helm for chart installation
 
 
-## Storage: Consul
+## Storage Setup with Consu
 
-We will use a very basic Consul cluster for our Vault backend. </br>
-Let's find what versions of Consul are available:
+We utilize a basic Consul cluster as our backend for Vault. To determine available Consul versions, use:
 
 ```
 helm search repo hashicorp/consul --versions
 
 ```
+Set up the Consul template and deploy:
 
+
+```
 mkdir manifests
-
 helm template consul hashicorp/consul  --namespace vault  --version 1.3.0 -f consul-values.yaml  > ./manifests/consul.yaml
-```
 
-Deploy the consul services:
-
-```
+# Deploy the consul services
 kubectl create ns vault
 kubectl -n vault apply -f ./manifests/consul.yaml
 kubectl -n vault get pods
@@ -29,24 +29,29 @@ kubectl -n vault get pods
 
 ## TLS End to End Encryption
 
-# Use CFSSL to generate certificates
+# Certificate Generation using CFSSL
+1. Navigate to the TLS directory and run a Docker container:
 
 ```
-
 cd tls
-
 docker run -it --rm -v ${PWD}:/work -w /work debian bash
-
+```
+2. Install CFSSL inside the container:
+```
 apt-get update && apt-get install -y curl &&
 curl -L https://github.com/cloudflare/cfssl/releases/download/v1.6.1/cfssl_1.6.1_linux_amd64 -o /usr/local/bin/cfssl && \
 curl -L https://github.com/cloudflare/cfssl/releases/download/v1.6.1/cfssljson_1.6.1_linux_amd64 -o /usr/local/bin/cfssljson && \
 chmod +x /usr/local/bin/cfssl && \
 chmod +x /usr/local/bin/cfssljson
+```
 
-#generate ca in /tmp
+3. Generate certificates:
+
+```
+# Generate CA in /tmp
 cfssl gencert -initca ca-csr.json | cfssljson -bare /tmp/ca
 
-#generate certificate in /tmp
+# Generate vault certificate in /tmp
 cfssl gencert \
   -ca=/tmp/ca.pem \
   -ca-key=/tmp/ca-key.pem \
@@ -56,19 +61,15 @@ cfssl gencert \
   ca-csr.json | cfssljson -bare /tmp/vault
 ```
 
-view the files:
+4. Move the generated files to the TLS directory:
 
-```
-ls -l /tmp
-```
-
-access the files:
-move the file to tls directory 
 ```
 mv /tmp/* .
-exit 
+exit
 ```
-Create the TLS secret 
+
+5. Create TLS secrets in Kubernetes:
+
 
 ```
 kubectl -n vault create secret tls tls-ca \
@@ -80,34 +81,28 @@ kubectl -n vault create secret tls tls-server \
   --key ./tls/vault-key.pem
 ```
 
-## Generate Kubernetes Manifests
+## Generate Kubernetes Manifests for Vault
 
-
-Let's find what versions of vault are available:
+Check for available Vault versions:
 
 ```
 helm search repo hashicorp/vault --versions
 ```
+For this demo, we use chart version 0.27.0:
 
-In this demo I will use the latest  chart version 0.27.0 (current) </br>
+1. Create a 'values' file for customization.
+2. Generate and apply Vault manifests:
 
-Let's firstly create a `values` file to customize vault.
-Let's grab the manifests:
-
-```
-helm template vault hashicorp/vault \
-  --namespace vault \
-  --version 0.27.0 \
-  -f vault-values.yaml \
-  > ./manifests/vault.yaml
-```
-
-## Deployment
+## Initializing Vault
+Execute these commands:
 
 ```
+helm template vault hashicorp/vault --namespace vault --version 0.27.0 -f vault-values.yaml > ./manifests/vault.yaml
 kubectl -n vault apply -f ./manifests/vault.yaml
 kubectl -n vault get pods
 ```
+
+
 
 ## Initialising Vault
 
@@ -124,20 +119,23 @@ kubectl -n vault exec -it vault-1 -- vault status
 kubectl -n vault exec -it vault-2 -- vault status
 
 ```
-## Web UI
+## Accessing the Web UI
 
-Let's checkout the web UI:
+
+To access the Vault Web UI:
 
 ```
 kubectl -n vault get svc
 kubectl -n vault port-forward svc/vault-ui 443:8200
 ```
 
-Now we can access the web UI [here](https://localhost/)
+Access the UI at https://localhost/
+
 
 ## Enable Kubernetes Authentication
 
-For the injector to be authorised to access vault, we need to enable K8s auth
+To authorize the injector for Vault access:
+
 
 ```
 kubectl -n vault exec -it vault-0 -- sh 
@@ -154,48 +152,67 @@ issuer="https://kubernetes.default.svc.cluster.local"
 
 
 
-# install mysql chart
+# Install MySQL Chart
+Setup MySQL within the Vault namespace:
+
 
 ```
 cd mysql
 helm install mysql . -n vault
 kubectl -n vault exec -it mysql-client -- sh
-
 ```
-MYSQL - 
+
+Configure MySQL user:
+```
+    mysql -u root -h mysql -p
     create user hcp identified by "superuser";
     GRANT SELECT, INSERT, UPDATE, DELETE, DROP, CREATE, ALTER, CREATE USER ON *.* TO hcp WITH GRANT OPTION;
     flush privileges;
-    
+``` 
 
-## VAULT 
-1. login to vault using cli 
-
+## Vault Database Secrets Engine 
+1. Log in to Vault CLI:
+```
+    kubectl -n vault exec -it vault-0 -- sh
     vault login
 
+```
 2. Enable the database secrets engine 
-
+```
     vault secrets enable database
-
-3. Configure Vault with the proper plugin and connection information
-
-    vault write database/config/mysql-database \
-        plugin_name=mysql-database-plugin \
-        connection_url="{{username}}:{{password}}@tcp(mysql)/" \
-        allowed_roles="my-role" \
-        username="root" \
-        password="Chess!125690"
-
-4.Configure a role that maps a name in Vault to an SQL statement to execute to create the database credential:
-
+```
+3. Configure Vault with MySQL plugin and connection details:
+```
+vault write database/config/mysql-database \
+    plugin_name=mysql-database-plugin \
+    connection_url="{{username}}:{{password}}@tcp(mysql)/" \
+    allowed_roles="my-role" \
+    username="hcp" \
+    password="PASSWORD"
+```
+4.Create a role for database credentials:
+```
     vault write database/roles/my-role \
         db_name=mysql-database \
         creation_statements="CREATE USER '{{name}}'@'%' IDENTIFIED BY '{{password}}';GRANT SELECT ON *.* TO '{{name}}'@'%';" \
         default_ttl="1h" \
         max_ttl="24h"
+```
 
-
-5. Generate a new credential by reading from the /creds endpoint with the name of the role:
-    
+5. Generate username and pass:
+    ```
     vault read database/creds/my-role
+```
+
+
+
+
+
+
+
+
+
+
+
+
 
